@@ -22,7 +22,7 @@ os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 keras.backend.clear_session()
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--data-path', type=str, default='filtered_train_data.txt',
+parser.add_argument('--data-path', type=str, default='train_data.txt',
                     help='Path to txt file with SMILES and labels')
 parser.add_argument('--task-name', type=str, default='classification', help='Name of the classification task')
 parser.add_argument('--n-folds', type=int, default=5, help='Number of folds for cross-validation')
