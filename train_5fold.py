@@ -8,10 +8,8 @@ import torch
 from torch.utils.data import DataLoader
 from sklearn.model_selection import KFold
 from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix
-
 from dataset import Prediction_Dataset, Pretrain_Collater, Finetune_Collater
 from metrics import AverageMeter, Records_R2, Records_AUC
-
 import os
 from model import PredictionModel, BertModel
 import argparse
@@ -22,7 +20,7 @@ os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 keras.backend.clear_session()
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--data-path', type=str, default='train_data.txt',
+parser.add_argument('--data-path', type=str, default='data/train_data.txt',
                     help='Path to txt file with SMILES and labels')
 parser.add_argument('--task-name', type=str, default='classification', help='Name of the classification task')
 parser.add_argument('--n-folds', type=int, default=5, help='Number of folds for cross-validation')
@@ -33,6 +31,56 @@ parser.add_argument('--no-pretrain', action='store_true', help='Do not use pretr
 parser.add_argument('--pretrained-path', type=str, default='weights/medium_weights_bert_encoder_weightsmedium_40.pt',
                     help='Path to pretrained weights')
 args = parser.parse_args()
+
+
+def upsample_positive_class(df, target_col='label', random_state=None):
+    positive_samples = df[df[target_col] == 1].copy()
+    negative_samples = df[df[target_col] == 0].copy()
+
+    print(f"Before upsampling - Positive: {len(positive_samples)}, Negative: {len(negative_samples)}")
+
+    neg_count = len(negative_samples)
+    pos_count = len(positive_samples)
+
+    if pos_count == 0:
+        print("Warning: No positive samples found!")
+        return df
+
+    if pos_count >= neg_count:
+        print("Positive class already equal or larger than negative class, no upsampling needed.")
+        return df
+
+    upsample_ratio = neg_count // pos_count
+    remaining_samples = neg_count % pos_count
+
+    upsampled_positive = []
+
+    for _ in range(upsample_ratio):
+        upsampled_positive.append(positive_samples.copy())
+
+    if remaining_samples > 0:
+        if random_state is not None:
+            remaining_pos = positive_samples.sample(n=remaining_samples, random_state=random_state)
+        else:
+            remaining_pos = positive_samples.sample(n=remaining_samples)
+        upsampled_positive.append(remaining_pos)
+
+    if upsampled_positive:
+        all_positive = pd.concat(upsampled_positive, ignore_index=True)
+    else:
+        all_positive = positive_samples
+
+    balanced_df = pd.concat([all_positive, negative_samples], ignore_index=True)
+
+    if random_state is not None:
+        balanced_df = balanced_df.sample(frac=1, random_state=random_state).reset_index(drop=True)
+    else:
+        balanced_df = balanced_df.sample(frac=1).reset_index(drop=True)
+
+    print(f"After upsampling - Positive: {len(all_positive)}, Negative: {len(negative_samples)}")
+    print(f"Total samples: {len(balanced_df)}")
+
+    return balanced_df
 
 
 class MetricsCalculator:
@@ -101,7 +149,6 @@ def load_data_from_txt(file_path):
 
 
 def main():
-    # Model architecture
     small = {'name': 'Small', 'num_layers': 3, 'num_heads': 2, 'd_model': 128, 'path': 'small_weights'}
     medium = {'name': 'Medium', 'num_layers': 8, 'num_heads': 8, 'd_model': 256, 'path': 'medium_weights'}
     large = {'name': 'Large', 'num_layers': 12, 'num_heads': 12, 'd_model': 512, 'path': 'large_weights'}
@@ -149,9 +196,13 @@ def main():
         train_df = df.iloc[train_idx].reset_index(drop=True)
         val_df = df.iloc[val_idx].reset_index(drop=True)
 
-        print(f"Train size: {len(train_df)}, Val size: {len(val_df)}")
+        print(f"Original train size: {len(train_df)}, Val size: {len(val_df)}")
 
-        train_dataset = Prediction_Dataset(train_df, smiles_head='SMILES',
+        train_df_upsampled = upsample_positive_class(train_df, target_col='label', random_state=seed)
+
+        print(f"Final train size after upsampling: {len(train_df_upsampled)}")
+
+        train_dataset = Prediction_Dataset(train_df_upsampled, smiles_head='SMILES',
                                            reg_heads=[], clf_heads=['label'])
         val_dataset = Prediction_Dataset(val_df, smiles_head='SMILES',
                                          reg_heads=[], clf_heads=['label'])
@@ -216,7 +267,6 @@ def main():
                 metrics_loss.update(loss.detach().cpu().item(), x.shape[0])
 
         for epoch in range(args.epochs):
-            # Train
             train_metrics.reset()
             train_loss.reset()
             for x, properties in train_dataloader:
